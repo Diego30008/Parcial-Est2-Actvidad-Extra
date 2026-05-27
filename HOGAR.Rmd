@@ -1,0 +1,240 @@
+---
+title: "Data Hogares"
+author: "Diego Luyo"
+date: "2026-05-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# ==========================================
+# 1. CARGA DIRECTA SALTANDO TÍTULOS
+# ==========================================
+library(rio)
+library(tidyverse)
+
+df_directo <- import("reporte.xlsx", skip = 5)
+
+# ==========================================
+# 2. REPARAR NOMBRES DUPLICADOS A LA FUERZA
+# ==========================================
+# Le cambiamos el nombre a las columnas usando su posición exacta, 
+# así no importa si se repiten en el Excel.
+colnames(df_directo)[1] <- "Columna_Provincia"
+
+# Buscamos cuáles columnas contienen la palabra "Sí" o "Si" 
+# (con o sin tilde) en toda la tabla
+indices_si <- grep("(?i)sí|si", colnames(df_directo))
+
+# ==========================================
+# 3. FILTRADO SEGURO POR POSICIÓN
+# ==========================================
+# Creamos la base seleccionando la primera columna y las posiciones del "Sí"
+df_analisis <- df_directo[, c(1, indices_si)]
+
+# Le ponemos un nombre limpio a nuestra columna de provincias
+colnames(df_analisis)[1] <- "Provincia"
+
+# ==========================================
+# 4. LIMPIEZA DE FILAS Y NÚMEROS
+# ==========================================
+df_analisis <- df_analisis %>%
+  # Limpiamos los textos de las provincias
+  mutate(Provincia = trimws(as.character(Provincia))) %>%
+  # Eliminamos filas que sean subtotales, notas al pie o vacías
+  filter(Provincia != "" & !is.na(Provincia) & !str_detect(Provincia, "(?i)fuente|nota|total|perú|provincia:")) %>%
+  # Convertimos todas las columnas de datos a números reales
+  mutate(across(-Provincia, ~ as.numeric(gsub("[ ,]", "", .))))
+
+# ==========================================
+# 5. CONTROL DE CALIDAD
+# ==========================================
+cat("--- ¡LO LOGRAMOS! Dimensiones finales ---\n")
+print(dim(df_analisis))
+
+cat("\n--- Primeras filas para verificar ---\n")
+print(head(df_analisis[, 1:4], 5))
+```
+```{r}
+# ==========================================
+# 1. JALAMOS LOS DATOS CORRECTOS POR SU POSICIÓN
+# ==========================================
+# Buscamos todas las columnas del "Sí" y del "No" de la primera tecnología para el total
+col_si_sonido <- grep("(?i)sí.*sonido|si.*sonido", colnames(df_directo))
+col_no_sonido <- grep("(?i)no.*sonido", colnames(df_directo))
+
+# Buscamos todas las columnas que son "Sí"
+indices_si <- grep("(?i)sí|si", colnames(df_directo))
+
+# Creamos la base usando:
+# Columna 3 (Donde están los nombres reales de las provincias)
+# Col_si_sonido y Col_no_sonido (Para calcular el total de hogares)
+# Las demás columnas del Sí
+df_analisis <- df_directo[, c(3, col_si_sonido, col_no_sonido, indices_si)]
+
+# Renombramos temporalmente las primeras 3 columnas
+colnames(df_analisis)[1] <- "Provincia"
+colnames(df_analisis)[2] <- "Contador_Si"
+colnames(df_analisis)[3] <- "Contador_No"
+
+# ==========================================
+# 2. CONVERSIÓN NUMÉRICA FORZADA
+# ==========================================
+for(i in 2:ncol(df_analisis)) {
+  df_analisis[, i] <- as.numeric(gsub("[ ,]", "", as.character(df_analisis[, i])))
+}
+
+# ==========================================
+# 3. CREACIÓN DEL TOTAL Y FILTRADO DE FILAS BASURA
+# ==========================================
+df_analisis <- df_analisis %>%
+  # Calculamos el total de hogares sumando Sí + No de la primera tecnología
+  mutate(Total_Hogares = Contador_Si + Contador_No) %>%
+  # Nos quedamos solo con las filas que tienen un Total_Hogares válido (elimina notas al pie)
+  filter(!is.na(Total_Hogares) & Total_Hogares > 0) %>%
+  # Limpiamos los nombres de las provincias para quitar el texto "Provincia_Amazonas..."
+  mutate(Provincia = as.character(Provincia)) %>%
+  mutate(Provincia = ifelse(str_detect(Provincia, ":"), 
+                            trimws(str_extract(Provincia, "(?<=:\\s).*")), 
+                            Provincia)) %>%
+  # Eliminamos filas que contengan subtotales o la palabra Perú
+  filter(!str_detect(Provincia, "(?i)fuente|nota|total|perú")) %>%
+  # Quitamos las columnas contadoras temporales y dejamos solo el Total y los Sí
+  select(Provincia, Total_Hogares, starts_with("Sí"))
+
+# Limpiamos los nombres de las columnas para eliminar códigos o números feos al final
+colnames(df_analisis) <- gsub("_[0-9]+$", "", colnames(df_analisis))
+
+# ==========================================
+# 4. CONTROL DE CALIDAD DEFINITIVO
+# ==========================================
+cat("--- Dimensiones finales (Deben ser aprox 195 filas) ---\n")
+print(dim(df_analisis))
+
+cat("\n--- Primeras filas para verificar nombres y Totales ---\n")
+print(head(df_analisis[, 1:4], 5))
+```
+```{r}
+# ==========================================
+# 1. CÁLCULO DE PORCENTAJES EN BASE A TOTAL_HOGARES
+# ==========================================
+df_porcentajes <- df_analisis %>%
+  # Dividimos cada columna de "Sí" entre el Total_Hogares y lo multiplicamos por 100
+  mutate(across(starts_with("Sí"), ~ (. / Total_Hogares) * 100))
+
+# ==========================================
+# 2. CÁLCULO DEL ÍNDICE DE BIENES TIC
+# ==========================================
+# El índice será el promedio de todos los porcentajes de bienes TIC de cada fila
+df_porcentajes <- df_porcentajes %>%
+  rowwise() %>%
+  mutate(Indice_TIC = mean(c_across(starts_with("Sí")), na.rm = TRUE)) %>%
+  ungroup()
+
+# ==========================================
+# 3. RESULTADOS PARA EL EXAMEN
+# ==========================================
+cat("========================================================\n")
+cat("   LAS 5 PROVINCIAS CON MAYOR ACCESO A BIENES TIC       \n")
+cat("========================================================\n")
+top_altos <- df_porcentajes %>%
+  select(Provincia, Indice_TIC) %>%
+  arrange(desc(Indice_TIC)) %>%
+  head(5)
+print(top_altos)
+
+cat("\n========================================================\n")
+cat("   LAS 5 PROVINCIAS CON MENOR ACCESO A BIENES TIC       \n")
+cat("========================================================\n")
+top_bajos <- df_porcentajes %>%
+  select(Provincia, Indice_TIC) %>%
+  arrange(Indice_TIC) %>%
+  head(5)
+print(top_bajos)
+```
+```{r}
+# ==========================================
+# PREPARACIÓN DE DATOS (Solo variables numéricas TIC)
+# ==========================================
+# Seleccionamos únicamente las columnas de los porcentajes del "Sí"
+datos_factor <- df_porcentajes %>% 
+  select(starts_with("Sí"))
+
+# Instala las librerías necesarias si no las tienes
+if(!require(psych)) install.packages("psych")
+library(psych)
+
+cat("========================================================\n")
+cat("          PRUEBAS ESTADÍSTICAS PARA EL EXAMEN          \n")
+cat("========================================================\n\n")
+
+# --- TEST 1: PRE-CONDICIONES (KMO y Esfericidad de Bartlett) ---
+cat("--- 1. VERIFICANDO PRE-CONDICIONES (KMO y Bartlett) ---\n")
+test_kmo <- KMO(datos_factor)
+print(test_kmo$MSA) # Si el MSA global es > 0.50 o 0.60, SÍ se cumple la pre-condición
+
+test_bartlett <- cortest.bartlett(cor(datos_factor), n = nrow(datos_factor))
+cat("P-valor de Bartlett:", test_bartlett$p.value, "\n\n") # Si es < 0.05, SÍ se cumple
+
+# --- TEST 2 y 3: CARGAS FACTORIALES Y VARIANZA EXPLICADA ---
+cat("--- 2. CÁLCULO DEL ÍNDICE PRINCIPAL (ACP) ---\n")
+# Extraemos el primer componente principal (el índice)
+acp <- principal(datos_factor, nfactors = 1, rotate = "none")
+
+# Varianza Total Explicada
+varianza_explicada <- acp$Vaccounted["Proportion Var", ]
+cat("Varianza total explicada por el índice:", round(varianza_explicada, 4), "\n\n")
+
+# Cargas factoriales (Loadings)
+cat("Cargas factoriales de cada variable (¿Cuántas están por debajo de 0.6?):\n")
+cargas <- as.data.frame(unclass(acp$loadings))
+print(round(cargas, 3))
+
+# Contamos cuántas variables cargan por DEBAJO de 0.6
+variables_bajas <- sum(cargas$PC1 < 0.6)
+cat("\nNúmero de variables que cargan por DEBAJO de 0.6:", variables_bajas, "\n")
+```
+```{r}
+# ==========================================
+# 1. CÁLCULO DE PORCENTAJES E ÍNDICE FINAL
+# ==========================================
+library(tidyverse)
+
+df_porcentajes <- df_analisis %>%
+  # Convertimos los conteos absolutos en porcentajes reales
+  mutate(across(starts_with("Sí"), ~ (. / Total_Hogares) * 100)) %>%
+  # Creamos el Índice TIC como el promedio de todas las variables
+  rowwise() %>%
+  mutate(Indice_TIC = mean(c_across(starts_with("Sí")), na.rm = TRUE)) %>%
+  ungroup() %>%
+  # Lo dejamos ordenadito de menor a mayor
+  arrange(Indice_TIC)
+
+# ==========================================
+# 2. CÓDIGO PARA DESCARGAR LA BASE A EXCEL
+# ==========================================
+# Instalamos la librería de exportación si no la tienes
+if(!require(writexl)) install.packages("writexl")
+library(writexl)
+
+# Esto descargará el archivo .xlsx en tu carpeta actual de trabajo
+write_xlsx(df_porcentajes, path = "Base_Limpia_Indice_TIC.xlsx")
+
+# ==========================================
+# 3. CONFIRMACIÓN EN TU CONSOLA
+# ==========================================
+cat("========================================================\n")
+cat("       ¡PROCESO COMPLETADO Y ARCHIVO DESCARGADO!        \n")
+cat("========================================================\n")
+cat(" El archivo se guardó como: 'Base_Limpia_Indice_TIC.xlsx'\n")
+cat(" Dimensiones exportadas:", dim(df_porcentajes)[1], "provincias y", dim(df_porcentajes)[2], "columnas.\n")
+cat("========================================================\n")
+```
+
+
+
+
+
