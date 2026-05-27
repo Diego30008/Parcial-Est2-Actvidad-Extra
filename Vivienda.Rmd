@@ -1,0 +1,107 @@
+---
+title: "Actividad Extra Parcial"
+author: "Diego Luyo"
+date: "2026-05-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# ==============================================================================
+# SCRIPT COMPLETO Y ORDENADO: ANÁLISIS DE VIVIENDA, EXAMEN Y EXPORTACIÓN EXCEL
+# ==============================================================================
+
+# 0. CARGA DE LIBRERÍAS
+library(psych)
+library(tidyverse)
+library(rio)
+
+# 1. CARGA DE LA BASE ORIGINAL
+DataVivienda <- import("reporte (1).xlsx")
+
+# 2. SELECCIÓN DE FILAS DE DATOS
+# Saltamos las primeras 8 filas de títulos para ir directo a las provincias
+DataDatos <- DataVivienda[9:nrow(DataVivienda), ]
+
+# 3. FILTRADO Y LIMPIEZA DE VARIABLES (Excluyendo "Otros...")
+# Seleccionamos columnas por posición numérica (dejando fuera 12, 20 y 27)
+DataIndice <- DataDatos %>%
+  select(4:11, 13:19, 21:26) %>%
+  # Limpieza profunda de comas, espacios y conversión forzada a números
+  mutate(across(everything(), ~ as.character(.x))) %>%
+  mutate(across(everything(), ~ gsub(",", "", .x))) %>%
+  mutate(across(everything(), ~ gsub(" ", "", .x))) %>%
+  mutate(across(everything(), ~ as.numeric(.x))) %>%
+  drop_na() # Elimina filas que no tengan datos completos
+
+print(paste("Provincias leídas con éxito:", nrow(DataIndice)))
+
+
+# 4. PRUEBAS DE PRE-CONDICIÓN (BARTLETT Y KMO)
+# Calculamos la matriz de correlación tolerable a los NA
+matriz_cor <- cor(DataIndice, use = "pairwise.complete.obs")
+
+# Corremos la prueba de Bartlett
+bartlett_resultado <- cortest.bartlett(matriz_cor, n = nrow(DataIndice))
+
+
+# 5. ANÁLISIS DE COMPONENTES PRINCIPALES (ACP REAL)
+# Para que R procese la matriz de correlación sin inflar los datos, 
+# se especifica obligatoriamente que la entrada es una matriz relacional.
+modelo_acp_real <- principal(matriz_cor, nfactors = 1, rotate = "none", covar = FALSE)
+
+
+# ==============================================================================
+# CONTROLES Y COMPROBACIÓN DE LAS OPCIONES DEL EXAMEN
+# ==============================================================================
+print("======================================================")
+print("       RESULTADOS DE COMPROBACIÓN PARA EL EXAMEN       ")
+print("======================================================")
+
+# Opción A: ¿Se cumplen TODAS las pre-condiciones? (Falso, KMO suele ser límite o mediocre)
+kmo_resultado <- KMO(DataIndice)
+print(paste("-> El KMO general es de:", round(kmo_resultado$MSA, 4)))
+
+# Opción B: ¿La pre-condición de Bartlett NO se cumple? (Falso, p-valor es 0, SÍ se cumple)
+print(paste("-> El p-valor de Bartlett es:", bartlett_resultado$p.value))
+
+# Opción C: ¿Sólo DOS variables no cargarían por encima de 0.3? 
+cargas_reales <- as.vector(modelo_acp_real$loadings[, 1])
+variables_bajas_reales <- sum(abs(cargas_reales) < 0.3)
+print(paste("-> Cantidad de variables con cargas menores a 0.3:", variables_bajas_reales))
+
+# Opción D: ¿La varianza total explicada por el índice es de aprox. 0.45?
+# Al tipificar el ACP sobre la matriz relacional estándar (R-mode), verás el valor esperado:
+varianza_real <- modelo_acp_real$Vaccount["Proportion Var", "PC1"]
+print(paste("-> La varianza total explicada calculada es de:", round(varianza_real, 4)))
+print("======================================================")
+
+
+# ==============================================================================
+# 6. ASIGNACIÓN DE NOMBRES REALES Y EXPORTACIÓN A EXCEL
+# ==============================================================================
+
+# Extraemos la fila donde están los nombres verdaderos de los materiales (Fila 8)
+nombres_reales <- as.character(DataVivienda[8, ])
+
+# Filtramos solo los nombres que corresponden a las posiciones numéricas usadas
+nombres_columnas_limpios <- nombres_reales[c(4:11, 13:19, 21:26)]
+
+# Asignamos las etiquetas de texto reales a las columnas numéricas de tu base
+colnames(DataIndice) <- nombres_columnas_limpios
+
+# Extraemos la columna de nombres de las provincias (Columna 3)
+provincias_limpias <- DataDatos[1:nrow(DataIndice), 3]
+
+# Consolidamos la columna identificadora con la matriz limpia etiquetada
+DataVivienda_Finalisima <- cbind(Provincia = provincias_limpias, DataIndice)
+
+# Exportamos a Excel de forma definitiva (Nota la coma después del objeto)
+export(DataVivienda_Finalisima, "DataVivienda_Procesada.xlsx")
+
+print("¡Éxito! El archivo 'DataVivienda_Procesada.xlsx' se guardó con sus nombres reales en tu carpeta.")
+```
+
